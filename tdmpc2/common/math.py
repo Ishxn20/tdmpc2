@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -107,3 +108,34 @@ def termination_statistics(pred, target, eps=1e-9):
 	f1 = 2 * (precision * recall) / (precision + recall + eps)
 	return {'termination_rate': rate,
 			'termination_f1': f1}
+
+
+ACHIEVEMENT_PREFIX = 'Achievements/'
+
+
+def achievement_unlocks(info):
+	"""Per-achievement unlock flags from a Crafter/Craftax terminal-step info dict.
+
+	Craftax reports `Achievements/<name>` as 100.0 when unlocked and 0.0 otherwise,
+	and only populates them on the step where the episode ends. Returns None for
+	environments that report no achievements.
+	"""
+	names = sorted(k for k in info if k.startswith(ACHIEVEMENT_PREFIX))
+	if not names:
+		return None
+	return [info[k] > 0 for k in names]
+
+
+def crafter_score(unlocks_per_episode):
+	"""Crafter benchmark score, following Hafner et al.
+
+	Takes one list of per-achievement unlock flags per episode, converts them to
+	success rates across episodes, and returns the geometric mean of those rates.
+	The rates are percentages offset by 1 so that a never-unlocked achievement
+	contributes 0 instead of collapsing the whole product to zero.
+
+	Note this is not the mean of Craftax's own per-episode `score` field: the
+	rates must be aggregated over episodes *before* the geometric mean is taken.
+	"""
+	rates = 100. * np.asarray(unlocks_per_episode, dtype=np.float64).mean(axis=0)
+	return float(np.exp(np.log(1. + rates).mean()) - 1.)

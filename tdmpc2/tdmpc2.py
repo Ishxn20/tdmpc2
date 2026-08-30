@@ -37,7 +37,15 @@ class TDMPC2(torch.nn.Module):
 		) if self.cfg.multitask else self._get_discount(cfg.episode_length)
 		print('Episode length:', cfg.episode_length)
 		print('Discount factor:', self.discount)
-		self._prev_mean = torch.nn.Buffer(torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device))
+		if self.cfg.discrete:
+			prev_mean = torch.full(
+				(self.cfg.horizon, self.cfg.action_dim),
+				1. / self.cfg.action_dim,
+				device=self.device,
+			)
+		else:
+			prev_mean = torch.zeros(self.cfg.horizon, self.cfg.action_dim, device=self.device)
+		self._prev_mean = torch.nn.Buffer(prev_mean)
 		if cfg.compile:
 			print('Compiling update function with torch.compile...')
 			self._update = torch.compile(self._update, mode="reduce-overhead")
@@ -149,6 +157,9 @@ class TDMPC2(torch.nn.Module):
 		Returns:
 			torch.Tensor: Action to take in the environment.
 		"""
+		if self.cfg.discrete:
+			return self._plan_discrete(obs, t0=t0, eval_mode=eval_mode, task=task)
+
 		# Sample policy trajectories
 		z = self.model.encode(obs, task)
 		if self.cfg.num_pi_trajs > 0:
@@ -205,6 +216,75 @@ class TDMPC2(torch.nn.Module):
 		self._prev_mean.copy_(mean)
 		return a.clamp(-1, 1)
 
+	def _plan_discrete(self, obs, t0=False, eval_mode=False, task=None):
+		"""Categorical CEM planner for one-hot discrete actions."""
+		z = self.model.encode(obs, task)
+		actions = torch.empty(
+			self.cfg.horizon,
+			self.cfg.num_samples,
+			self.cfg.action_dim,
+			device=self.device,
+		)
+
+		if self.cfg.num_pi_trajs > 0:
+			pi_actions = torch.empty(
+				self.cfg.horizon,
+				self.cfg.num_pi_trajs,
+				self.cfg.action_dim,
+				device=self.device,
+			)
+			_z = z.repeat(self.cfg.num_pi_trajs, 1)
+			for t in range(self.cfg.horizon):
+				pi_actions[t], _ = self.model.pi(_z, task)
+				if t < self.cfg.horizon - 1:
+					_z = self.model.next(_z, pi_actions[t], task)
+			actions[:, :self.cfg.num_pi_trajs] = pi_actions
+
+		z = z.repeat(self.cfg.num_samples, 1)
+		probs = torch.full(
+			(self.cfg.horizon, self.cfg.action_dim),
+			1. / self.cfg.action_dim,
+			device=self.device,
+		)
+		if not t0:
+			probs[:-1] = self._prev_mean[1:]
+
+		num_cem_samples = self.cfg.num_samples - self.cfg.num_pi_trajs
+		for _ in range(self.cfg.iterations):
+			if num_cem_samples > 0:
+				indices = torch.multinomial(probs, num_cem_samples, replacement=True)
+				actions[:, self.cfg.num_pi_trajs:] = F.one_hot(
+					indices, self.cfg.action_dim,
+				).to(actions.dtype)
+
+			value = self._estimate_value(z, actions, task).nan_to_num(0)
+			elite_idxs = torch.topk(
+				value.squeeze(1), self.cfg.num_elites, dim=0,
+			).indices
+			elite_value = value[elite_idxs]
+			elite_actions = actions[:, elite_idxs]
+
+			max_value = elite_value.max(0).values
+			score = torch.exp(self.cfg.temperature * (elite_value - max_value))
+			score = score / (score.sum(0) + 1e-9)
+			probs = (score.unsqueeze(0) * elite_actions).sum(dim=1)
+			# Blend a fixed share of uniform mass back in, so that an action no
+			# elite happened to use never drops to exactly zero (which would be
+			# absorbing: never sampled, never scored, never able to recover).
+			# The share is fixed, not the per-action floor, so the planner keeps
+			# the same authority whether the task has 17 actions or 43.
+			uniform_mix = min(self.cfg.categorical_min_prob, 1.)
+			probs = probs * (1. - uniform_mix) + uniform_mix / self.cfg.action_dim
+			probs = probs / probs.sum(dim=-1, keepdim=True)
+
+		if eval_mode:
+			index = probs[0].argmax()
+		else:
+			index = torch.multinomial(probs[0], 1).squeeze(0)
+		action = F.one_hot(index, self.cfg.action_dim).to(probs.dtype)
+		self._prev_mean.copy_(probs)
+		return action
+
 	def update_pi(self, zs, task):
 		"""
 		Update policy using a sequence of latent states.
@@ -223,7 +303,8 @@ class TDMPC2(torch.nn.Module):
 
 		# Loss is a weighted sum of Q-values
 		rho = torch.pow(self.cfg.rho, torch.arange(len(qs), device=self.device))
-		pi_loss = (-(self.cfg.entropy_coef * info["scaled_entropy"] + qs).mean(dim=(1,2)) * rho).mean()
+		entropy_coef = self.cfg.entropy_coef_discrete if self.cfg.discrete else self.cfg.entropy_coef
+		pi_loss = (-(entropy_coef * info["scaled_entropy"] + qs).mean(dim=(1,2)) * rho).mean()
 		pi_loss.backward()
 		pi_grad_norm = torch.nn.utils.clip_grad_norm_(self.model._pi.parameters(), self.cfg.grad_clip_norm)
 		self.pi_optim.step()

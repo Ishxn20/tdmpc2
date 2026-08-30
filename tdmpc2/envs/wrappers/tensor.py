@@ -14,6 +14,10 @@ class TensorWrapper(gym.Wrapper):
 		super().__init__(env)
 	
 	def rand_act(self):
+		if isinstance(self.action_space, gym.spaces.Discrete):
+			action = torch.zeros(self.action_space.n, dtype=torch.float32)
+			action[self.action_space.sample()] = 1.
+			return action
 		return torch.from_numpy(self.action_space.sample().astype(np.float32))
 
 	def _try_f32_tensor(self, x):
@@ -35,7 +39,11 @@ class TensorWrapper(gym.Wrapper):
 		return self._obs_to_tensor(self.env.reset())
 
 	def step(self, action):
-		obs, reward, done, info = self.env.step(action.numpy())
+		if isinstance(self.action_space, gym.spaces.Discrete):
+			action = int(action.argmax().item()) if action.numel() > 1 else int(action.item())
+		else:
+			action = action.numpy()
+		obs, reward, done, info = self.env.step(action)
 		info = defaultdict(float, info)
 		info['success'] = float(info['success'])
 		info['terminated'] = torch.tensor(float(info['terminated']))

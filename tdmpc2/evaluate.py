@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from termcolor import colored
 
+from common import math
 from common.parser import parse_cfg
 from common.seed import set_seed
 from envs import make_env
@@ -71,13 +72,13 @@ def evaluate(cfg: dict):
 	for task_idx, task in enumerate(tasks):
 		if not cfg.multitask:
 			task_idx = None
-		ep_rewards, ep_successes = [], []
+		ep_rewards, ep_successes, ep_achievements, ep_unlocks = [], [], [], []
 		for i in range(cfg.eval_episodes):
 			obs, done, ep_reward, t = env.reset(task_idx=task_idx), False, 0, 0
 			if cfg.save_video:
 				frames = [env.render()]
 			while not done:
-				action = agent.act(obs, t0=t==0, task=task_idx)
+				action = agent.act(obs, t0=t==0, eval_mode=True, task=task_idx)
 				obs, reward, done, info = env.step(action)
 				ep_reward += reward
 				t += 1
@@ -85,6 +86,11 @@ def evaluate(cfg: dict):
 					frames.append(env.render())
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
+			if 'achievements' in info: # Crafter/Craftax
+				ep_achievements.append(info['achievements'])
+			unlocks = math.achievement_unlocks(info)
+			if unlocks is not None:
+				ep_unlocks.append(unlocks)
 			if cfg.save_video:
 				imageio.mimsave(
 					os.path.join(video_dir, f'{task}-{i}.mp4'), frames, fps=15)
@@ -92,9 +98,12 @@ def evaluate(cfg: dict):
 		ep_successes = np.mean(ep_successes)
 		if cfg.multitask:
 			scores.append(ep_successes*100 if task.startswith('mw-') else ep_rewards/10)
-		print(colored(f'  {task:<22}' \
-			f'\tR: {ep_rewards:.01f}  ' \
-			f'\tS: {ep_successes:.02f}', 'yellow'))
+		summary = f'  {task:<22}\tR: {ep_rewards:.01f}  \tS: {ep_successes:.02f}'
+		if ep_achievements: # Crafter/Craftax
+			summary += f'  \tA: {np.mean(ep_achievements):.02f}'
+		if ep_unlocks:
+			summary += f'  \tScore: {math.crafter_score(ep_unlocks):.02f}%'
+		print(colored(summary, 'yellow'))
 	if cfg.multitask:
 		print(colored(f'Normalized score: {np.mean(scores):.02f}', 'yellow', attrs=['bold']))
 

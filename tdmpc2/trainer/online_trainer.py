@@ -3,6 +3,8 @@ from time import time
 import numpy as np
 import torch
 from tensordict.tensordict import TensorDict
+
+from common import math
 from trainer.base import Trainer
 
 
@@ -13,6 +15,7 @@ class OnlineTrainer(Trainer):
 		super().__init__(*args, **kwargs)
 		self._step = 0
 		self._ep_idx = 0
+		self._pretrained = False
 		self._start_time = time()
 
 	def common_metrics(self):
@@ -27,7 +30,8 @@ class OnlineTrainer(Trainer):
 
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
-		ep_rewards, ep_successes, ep_lengths = [], [], []
+		ep_rewards, ep_successes, ep_lengths, ep_achievements = [], [], [], []
+		ep_unlocks = []
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -43,13 +47,23 @@ class OnlineTrainer(Trainer):
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
 			ep_lengths.append(t)
+			if 'achievements' in info:
+				ep_achievements.append(info['achievements'])
+			unlocks = math.achievement_unlocks(info)
+			if unlocks is not None:
+				ep_unlocks.append(unlocks)
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
-		return dict(
+		metrics = dict(
 			episode_reward=np.nanmean(ep_rewards),
 			episode_success=np.nanmean(ep_successes),
 			episode_length= np.nanmean(ep_lengths),
 		)
+		if ep_achievements: # Crafter/Craftax
+			metrics['episode_achievements'] = np.nanmean(ep_achievements)
+		if ep_unlocks: # Needs rates across episodes, so eval-only
+			metrics['crafter_score'] = math.crafter_score(ep_unlocks)
+		return metrics
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
 		"""Creates a TensorDict for a new episode."""
@@ -96,6 +110,8 @@ class OnlineTrainer(Trainer):
 						episode_success=info['success'],
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'])
+					if 'achievements' in info: # Crafter/Craftax
+						train_metrics.update(episode_achievements=info['achievements'])
 					train_metrics.update(self.common_metrics())
 					self.logger.log(train_metrics, 'train')
 					self._ep_idx = self.buffer.add(torch.cat(self._tds))
@@ -111,9 +127,12 @@ class OnlineTrainer(Trainer):
 			obs, reward, done, info = self.env.step(action)
 			self._tds.append(self.to_td(obs, action, reward, info['terminated']))
 
-			# Update agent
-			if self._step >= self.cfg.seed_steps:
-				if self._step == self.cfg.seed_steps:
+			# Update agent. The buffer is only written at episode boundaries, so
+			# `seed_steps` alone does not guarantee there is anything to sample:
+			# a capped seed phase can end mid-episode.
+			if self._step >= self.cfg.seed_steps and self.buffer.num_eps > 0:
+				if not self._pretrained:
+					self._pretrained = True
 					num_updates = self.cfg.seed_steps
 					print('Pretraining agent on seed data...')
 				else:

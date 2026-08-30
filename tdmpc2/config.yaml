@@ -5,6 +5,12 @@ defaults:
 task: dog-run
 obs: state
 episodic: false
+discrete: false
+
+# Crafter / Craftax
+craftax_max_steps: 10_000
+craftax_device: cpu
+frame_stack: 3
 
 # evaluation
 checkpoint: ???
@@ -27,6 +33,7 @@ discount_denom: 5
 discount_min: 0.95
 discount_max: 0.995
 buffer_size: 1_000_000
+max_seed_steps: 10_000
 exp_name: default
 data_dir: ???
 
@@ -36,15 +43,20 @@ iterations: 6
 num_samples: 512
 num_elites: 64
 num_pi_trajs: 24
-horizon: 3
+horizon: 10
 min_std: 0.05
 max_std: 2
 temperature: 0.5
+categorical_tau: 1.0
+categorical_min_prob: 0.05   # share of planner mass kept uniform (not per-action)
 
 # actor
 log_std_min: -10
 log_std_max: 2
 entropy_coef: 1e-4
+# Categorical `scaled_entropy` is bounded in [0, 1], whereas the Gaussian one is
+# unbounded and ~action_dim larger, so discrete tasks need their own coefficient.
+entropy_coef_discrete: 1e-2
 
 # critic
 num_bins: 101

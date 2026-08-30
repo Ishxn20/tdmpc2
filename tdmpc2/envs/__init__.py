@@ -29,6 +29,10 @@ try:
 	from envs.mujoco import make_env as make_mujoco_env
 except:
 	make_mujoco_env = missing_dependencies
+try:
+	from envs.craftax import make_env as make_craftax_env
+except:
+	make_craftax_env = missing_dependencies
 
 
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -65,11 +69,12 @@ def make_env(cfg):
 
 	else:
 		env = None
-		for fn in [make_dm_control_env, make_maniskill_env, make_metaworld_env, make_myosuite_env, make_mujoco_env]:
+		for fn in [make_craftax_env, make_dm_control_env, make_maniskill_env, make_metaworld_env, make_myosuite_env, make_mujoco_env]:
 			try:
 				env = fn(cfg)
 			except ValueError:
-				pass
+				continue
+			break
 		if env is None:
 			raise ValueError(f'Failed to make environment "{cfg.task}": please verify that dependencies are installed and that the task exists.')
 		env = TensorWrapper(env)
@@ -77,7 +82,14 @@ def make_env(cfg):
 		cfg.obs_shape = {k: v.shape for k, v in env.observation_space.spaces.items()}
 	except: # Box
 		cfg.obs_shape = {cfg.get('obs', 'state'): env.observation_space.shape}
-	cfg.action_dim = env.action_space.shape[0]
+	cfg.discrete = isinstance(env.action_space, gym.spaces.Discrete)
+	cfg.action_dim = env.action_space.n if cfg.discrete else env.action_space.shape[0]
 	cfg.episode_length = env.max_episode_steps
-	cfg.seed_steps = max(1000, 5*cfg.episode_length)
+	# Cap the seed phase; long-horizon tasks would otherwise spend hours on the
+	# single blocking pretraining loop in `OnlineTrainer.train`.
+	cfg.seed_steps = max(1000, min(5*cfg.episode_length, cfg.max_seed_steps))
+	# Environments may opt into episodic RL (terminations) themselves.
+	cfg.episodic = cfg.episodic or bool(getattr(env.unwrapped, 'episodic', False))
+	assert not (cfg.multitask and cfg.discrete), \
+		'Multi-task training with discrete action spaces is not supported.'
 	return env

@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from common import layers, math, init
 from tensordict import TensorDict
@@ -26,7 +27,8 @@ class WorldModel(nn.Module):
 		self._dynamics = layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], cfg.latent_dim, act=layers.SimNorm(cfg))
 		self._reward = layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], max(cfg.num_bins, 1))
 		self._termination = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], 1) if cfg.episodic else None
-		self._pi = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], 2*cfg.action_dim)
+		pi_out_dim = cfg.action_dim if cfg.discrete else 2 * cfg.action_dim
+		self._pi = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], pi_out_dim)
 		self._Qs = layers.Ensemble([layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], max(cfg.num_bins, 1), dropout=cfg.dropout).apply(init.weight_init) for _ in range(cfg.num_q)])
 		self.apply(init.weight_init)
 		init.zero_([self._reward[-1].weight, self._Qs.params["2", "weight"]])
@@ -149,6 +151,25 @@ class WorldModel(nn.Module):
 		"""
 		if self.cfg.multitask:
 			z = self.task_emb(z, task)
+
+		if self.cfg.discrete:
+			logits = self._pi(z)
+			probs = F.softmax(logits, dim=-1)
+			action = F.gumbel_softmax(
+				logits, tau=self.cfg.categorical_tau, hard=True, dim=-1,
+			)
+			mean = F.one_hot(logits.argmax(dim=-1), self.cfg.action_dim).to(logits.dtype)
+			log_probs = F.log_softmax(logits, dim=-1)
+			entropy = -(probs * log_probs).sum(dim=-1, keepdim=True)
+			max_entropy = torch.log(logits.new_tensor(float(self.cfg.action_dim)))
+			info = TensorDict({
+				'mean': mean,
+				'logits': logits,
+				'action_prob': (action * probs).sum(dim=-1, keepdim=True),
+				'entropy': entropy,
+				'scaled_entropy': entropy / max_entropy,
+			})
+			return action, info
 
 		# Gaussian policy prior
 		mean, log_std = self._pi(z).chunk(2, dim=-1)

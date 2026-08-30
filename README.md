@@ -73,7 +73,7 @@ Depending on your existing system packages, you may need to install other depend
 
 ## Supported tasks
 
-This codebase provides support for all **104** continuous control tasks from **DMControl**, **Meta-World**, **ManiSkill2**, and **MyoSuite** used in our paper. Specifically, it supports 39 tasks from DMControl (including 11 custom tasks), 50 tasks from Meta-World, 5 tasks from ManiSkill2, and 10 tasks from MyoSuite, and covers all tasks used in the paper. See below table for expected name formatting for each task domain:
+This codebase provides support for all **104** continuous control tasks from **DMControl**, **Meta-World**, **ManiSkill2**, and **MyoSuite** used in our paper. It additionally supports discrete-action Crafter and Craftax through the accelerator-friendly Craftax implementation. Specifically, it supports 39 tasks from DMControl (including 11 custom tasks), 50 tasks from Meta-World, 5 tasks from ManiSkill2, and 10 tasks from MyoSuite. See below table for expected name formatting for each task domain:
 
 | domain | task
 | --- | --- |
@@ -85,10 +85,45 @@ This codebase provides support for all **104** continuous control tasks from **D
 | maniskill | pick-ycb
 | myosuite  | myo-key-turn
 | myosuite  | myo-key-turn-hard
+| crafter   | crafter
+| craftax   | craftax-classic
+| craftax   | craftax
 
 which can be run by specifying the `task` argument for `evaluation.py`. Multi-task training and evaluation is specified by setting `task=mt80` or `task=mt30` for the 80-task and 30-task sets, respectively. While you generally do not need to access the underlying task IDs or embeddings during training or evaluation of our multi-task models, the mapping from task name to task embedding used in our work can be found [here](https://github.com/nicklashansen/tdmpc2/blob/7ec6bc83a82a5188ca3faddc59aea83f430ab570/tdmpc2/common/__init__.py#L26). As of April 2025, our codebase also provides basic support for other MuJoCo/Box2d Gymnasium tasks; refer to the `envs` directory for a list of tasks. It should be relatively straightforward to add support for custom tasks by following the examples in `envs`.
 
 **Note:** we also provide support for image observations in the DMControl tasks. Use argument `obs=rgb` if you wish to train visual policies.
+
+### Crafter and Craftax
+
+The `crafter` task uses Craftax Classic, which implements Crafter's 17-action game and 22 achievements in JAX. `craftax-classic` is an equivalent explicit alias, while `craftax` selects the extended 43-action, multi-level game. Both symbolic (`obs=state`) and 64x64 frame-stacked pixel (`obs=rgb`) observations are supported.
+
+TD-MPC2 uses a categorical policy prior and categorical CEM planner for these tasks. Actions are stored as one-hot vectors in replay and converted to integer environment actions by the environment wrapper.
+
+Install the environment with `pip install craftax==1.6.1`, or recreate the provided Conda environment. Example runs:
+
+```
+$ python train.py task=crafter obs=state model_size=5 enable_wandb=false
+$ python train.py task=crafter obs=rgb model_size=5 enable_wandb=false
+$ python train.py task=craftax obs=state model_size=5 enable_wandb=false
+```
+
+Observations are `1345`-dim for `crafter` and `8268`-dim for `craftax` in `obs=state`, or `(3*frame_stack, 64, 64)` uint8 frames in `obs=rgb`. Both tasks are episodic: the agent terminates on death (and, for `craftax`, on beating the boss), while reaching `craftax_max_steps` is treated as a truncation so that TD-MPC2 bootstraps through it. `episodic=true` is therefore enabled automatically.
+
+Two progress metrics are reported. `episode_achievements` (console column `A`) is the number of distinct achievements unlocked in an episode -- out of 22 for `crafter`, 67 for `craftax`. `crafter_score` (console column `C`) is the actual benchmark score from Hafner et al.: each achievement's success *rate* across the evaluation episodes, combined with a geometric mean. Because it needs rates measured over many episodes, it is computed during evaluation only, not per training episode. Note this is not the mean of Craftax's own per-episode `score` field -- rates have to be aggregated across episodes before the geometric mean, not after. `episode_success` is only meaningful for `craftax`, where it marks a boss kill.
+
+Relevant arguments:
+
+| argument | default | description |
+| --- | --- | --- |
+| `craftax_max_steps` | `10_000` | environment steps before truncation |
+| `craftax_device` | `cpu` | JAX device; defaults to CPU so PyTorch owns the training GPU |
+| `frame_stack` | `3` | stacked frames for `obs=rgb` |
+| `entropy_coef_discrete` | `1e-2` | entropy bonus for the categorical policy |
+| `categorical_tau` | `1.0` | Gumbel-Softmax temperature of the policy prior |
+| `categorical_min_prob` | `0.01` | probability floor kept by the planner per action |
+| `max_seed_steps` | `10_000` | cap on the seed phase, which scales with episode length |
+
+`entropy_coef_discrete` is separate from `entropy_coef` on purpose: the categorical `scaled_entropy` is bounded in `[0, 1]`, whereas the Gaussian one is unbounded and roughly `action_dim` times larger, so the continuous default would leave the categorical policy with effectively no exploration pressure.
 
 
 ## Example usage
