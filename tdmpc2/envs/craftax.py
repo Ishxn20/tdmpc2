@@ -166,4 +166,20 @@ def make_env(cfg):
 	if getattr(cfg, 'multitask', False):
 		raise ValueError('Crafter/Craftax cannot be used in multi-task task sets.')
 	env_name, classic = _TASKS[cfg.task]
+	# `horizon` is 10 here (vs. the TD-MPC2 default of 3) so the planner can look
+	# far enough ahead for Crafter's multi-step achievement chains. But `rho`'s
+	# default of 0.5 was tuned for horizon=3: by depth 9 it weighs training on
+	# that imagined step at 0.5**9 =~ 0.002, even though the planner leans on
+	# depths 6-10 just as much as on depth 0. Raise rho so the last planned
+	# step keeps a weight comparable to what horizon=3/rho=0.5 gives depth 2
+	# (0.25); see also `envs/mujoco.py`, which overrides rho per-env the same
+	# way for episodic tasks.
+	cfg.rho = 0.85
+	# Craftax episodes run for up to `craftax_max_steps` (10,000) steps, and key
+	# achievements (e.g. crafting tools) only pay off after long setup chains.
+	# The default discount_max caps the value function's effective lookahead at
+	# 1/(1-0.995) = 200 steps, far short of that. Raise it toward (but not all
+	# the way to) the episode length: too high raises TD-target variance enough
+	# to slow learning, so this stops at an effective ~1,000-step lookahead.
+	cfg.discount_max = 0.999
 	return CraftaxWrapper(cfg, env_name, classic)

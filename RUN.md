@@ -75,7 +75,11 @@ Startup order, so a quiet terminal does not look like a hang:
   episode; at 10,000 steps that is a ~123 MB, 11-minute clip per eval. To watch
   the agent, evaluate separately afterwards with short episodes:
   `python evaluate.py task=crafter checkpoint=<path> craftax_max_steps=500 eval_episodes=3 save_video=true`
-- **`horizon: 10`** is set in `config.yaml`, above the TD-MPC2 default of 3. It is
-  3.3x the planning cost, and `rho: 0.5` means training barely weights depths
-  6-10 while the planner fully uses them. Revisit both together once
-  steps-per-second is known.
+- **`horizon: 10`** is set in `config.yaml`, above the TD-MPC2 default of 3 (3.3x
+  the planning cost). `envs/craftax.py::make_env` now raises `rho` to 0.85 and
+  `discount_max` to 0.999 specifically for this task, so training weights the
+  deep imagined steps the planner relies on, and the value function looks
+  further ahead than the previous ~200-step effective horizon. Neither value
+  has been empirically validated by a training run yet -- they're reasoned
+  fixes for a real mismatch, not tuned numbers. Watch `train/value_loss` and
+  `eval/crafter_score` on the next run to see if they actually help.
