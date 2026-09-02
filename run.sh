@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Launch TD-MPC2 on Crafter (Craftax Classic).
 #
-#   bash run.sh                    # the 1M-step benchmark run
+#   bash run.sh                    # the 1M-step benchmark run, with eval video
+#   bash run.sh save_video=false   # skip video (faster, no upload cost)
 #   bash run.sh compile=false      # any extra args are passed to train.py
 #   bash run.sh task=craftax       # full Craftax instead of Crafter
+#
+# Records one eval video per evaluation (~20 over a 1M-step run, ~11 min /
+# ~123 MB each, uploaded to wandb) since save_video is not overridden below --
+# config.yaml's own default is `true`. Pass save_video=false to skip this.
 #
 # Logs to stdout and to ~/train.log.
 
@@ -35,5 +40,4 @@ export JAX_PLATFORMS=cpu
 	steps=1000000 \
 	wandb_project=tdmpc2-crafter \
 	wandb_entity=LEQ \
-	save_video=false \
 	"$@" 2>&1 | tee ~/train.log
