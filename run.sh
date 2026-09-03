@@ -36,7 +36,7 @@ export JAX_PLATFORMS=cpu
 
 "$PYTHON" train.py \
 	task=crafter \
-	model_size=5 \
+	model_size=48 \
 	steps=1000000 \
 	wandb_project=tdmpc2-crafter \
 	wandb_entity=LEQ \
